@@ -11,7 +11,7 @@ namespace SocialNetwork.Controllers;
 [Authorize]
 public class UserController : ControllerBase
 {
-    [HttpGet("v1/categories")]
+    [HttpGet("v1/users")]
     public async Task<IActionResult> GetAsync(
             [FromServices] AppDbContext context)
     {
