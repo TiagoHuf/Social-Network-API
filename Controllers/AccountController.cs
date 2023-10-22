@@ -7,6 +7,8 @@ using SocialNetwork.NovaPasta.Accounts;
 using SocialNetwork.Services;
 using SocialNetwork.ViewModels;
 using SocialNetwork.ViewModels.Accounts;
+using System.Reflection;
+using System.Security.Claims;
 
 namespace SocialNetwork.Controllers;
 
@@ -17,7 +19,8 @@ public class AccountController : ControllerBase
     public async Task<IActionResult> Post(
         [FromBody] RegisterViewModel model,
         [FromServices] AppDbContext context,
-        [FromServices] EmailService emailService)
+        [FromServices] EmailService emailService,
+        [FromServices] TokenService tokenService)
     {
         if (!ModelState.IsValid)
             return BadRequest(new ResultViewModel<List<string>>(ModelState.Values
@@ -26,21 +29,29 @@ public class AccountController : ControllerBase
                 .ToList()
             ));
 
-        var user = new User
+        var newUser = new User
         {
             Name = model.Name,
             Email = model.Email,
-            Role = model.Role
+            Role = model.Role,
+            Password = PasswordHasher.Hash(model.Password)
         };
-
-        user.Password = PasswordHasher.Hash(model.Password);
 
         try
         {
-            await context.Users.AddAsync(user);
+            await context.Users.AddAsync(newUser);
             await context.SaveChangesAsync();
 
-            emailService.Send(user.Name, user.Email, "Bem vindo ao blog!", $"Sua senha é {model.Password}");
+            string pathToHtmlFile = "Resources/WelcomeEmailTemplate.html";
+            string htmlContent = System.IO.File.ReadAllText(pathToHtmlFile);
+
+            var user = context.Users.FirstOrDefault(u => u.Email == newUser.Email);
+
+            var token = tokenService.GenerateAuthenticationToken(user.Id);
+
+            htmlContent = htmlContent.Replace("{link}", token);
+
+            emailService.Send(user.Name, user.Email, "Bem vindo ao blog!", htmlContent);
             return Ok(new ResultViewModel<dynamic>(new
             {
                 user = user.Email,
@@ -80,6 +91,9 @@ public class AccountController : ControllerBase
         if (!PasswordHasher.Verify(user.Password, model.Password))
             return StatusCode(401, new ResultViewModel<string>("Usuário ou senha inválidos"));
 
+        if (user.Authenticated is false)
+            return StatusCode(403, new ResultViewModel<string>("Email não confirmado"));
+
         try
         {
             var token = tokenService.GenerateToken(user);
@@ -88,6 +102,32 @@ public class AccountController : ControllerBase
         catch
         {
             return StatusCode(500, new ResultViewModel<string>("05X04 - Falha interna no servidor"));
+        }
+    }
+
+    [HttpPost("v1/accounts/authentication/{token}")]
+    public async Task<IActionResult> Authenticate(
+        [FromRoute] string token,
+        [FromServices] AppDbContext context,
+        [FromServices] TokenService tokenService)
+    {
+        var userId = tokenService.GetUserIdFromToken(token);
+
+        var user = await context.Users.FindAsync(userId);
+
+        if (user != null)
+        {
+            user.Authenticated = true;
+
+            context.Entry(user).State = EntityState.Modified;
+
+            await context.SaveChangesAsync();
+
+            return Ok(new ResultViewModel<string>("Email confirmado com sucesso"));
+        }
+        else
+        {
+            return NotFound(new { message = "Usuário não encontrado" });
         }
     }
 }
